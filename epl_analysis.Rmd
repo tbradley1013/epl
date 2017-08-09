@@ -1,0 +1,209 @@
+---
+title: "Exploratory Data Analysis of English Premier League Opening Weekend"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+
+In honor of the start of a new season for the English Premier League (EPL), I am putting together this exploratory data analysis of historical EPL data to see how teams typically do to start a season. 
+
+```{r libraries}
+# loading in the required packages
+suppressWarnings(suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(lubridate)
+  library(magrittr)
+  library(tidyquant)
+  library(purrr)
+}))
+```
+
+First, we will load in the data. All of the data used in this analysis is from www.football-data.co.uk. 
+
+```{r read-files}
+files <- list.files(path = "epl_results", full.names = TRUE)
+
+raw_data <- map(files, read.csv)
+```
+
+
+Below is the column information provided by the website:
+    Div = League Division
+    Date = Match Date (dd/mm/yy)
+    HomeTeam = Home Team
+    AwayTeam = Away Team
+    FTHG and HG = Full Time Home Team Goals
+    FTAG and AG = Full Time Away Team Goals
+    FTR and Res = Full Time Result (H=Home Win, D=Draw, A=Away Win) 
+    HTHG = Half Time Home Team Goals 
+    HTAG = Half Time Away Team Goals 
+    HTR = Half Time Result (H=Home Win, D=Draw, A=Away Win)
+
+Match Statistics (where available)
+    Attendance = Crowd Attendance
+    Referee = Match Referee
+    HS = Home Team Shots
+    AS = Away Team Shots
+    HST = Home Team Shots on Target
+    AST = Away Team Shots on Target
+    HHW = Home Team Hit Woodwork
+    AHW = Away Team Hit Woodwork
+    HC = Home Team Corners
+    AC = Away Team Corners
+    HF = Home Team Fouls Committed
+    AF = Away Team Fouls Committed
+    HO = Home Team Offsides
+    AO = Away Team Offsides
+    HY = Home Team Yellow Cards
+    AY = Away Team Yellow Cards
+    HR = Home Team Red Cards
+    AR = Away Team Red Cards
+    
+There are more columns provided in the raw data set that have to do with betting odds, however, we will remove them as they are not going to be used in this analysis. Additionally, only two seasons data has attendance recorded, so this will be removed. Looking through the data, all of the data sets for the 2000/2001 through the 2016/2017 seasons have all of tje match statistics listed above. The data sets prior to the 2000/2001 data set only have the general data and none of the match statistics.  Becasue of these differences in available data we will only use the general statistics for the first part of this analysis. 
+
+```{r combine-data}
+data_general <- map(raw_data, function(x){
+  output <- x %>%
+    filter(Date != "") %>%  #the csv files pulled in some extra rows, this line removes them
+    mutate(Date = dmy(Date)) %>% #converting the Date column from a factor to date object
+    select(Div:HTR) %>%
+    mutate(season = ifelse(month(Date) > 7,
+                                   year(Date) + 1,
+                                    year(Date)))  #creating a reference date 
+  return(output)
+})
+
+data <- do.call(rbind, data_general) %>% as.tibble()
+```
+
+
+```{r show-combined, results = "hide"}
+data 
+```
+
+```{r output-show-combined}
+# # A tibble: 8,360 x 11
+#       Div       Date    HomeTeam       AwayTeam  FTHG  FTAG    FTR  HTHG  HTAG    HTR season
+#    <fctr>     <date>      <fctr>         <fctr> <int> <int> <fctr> <int> <int> <fctr>  <dbl>
+#  1     E0 1995-08-19 Aston Villa     Man United     3     1      H     3     0      H   1996
+#  2     E0 1995-08-19   Blackburn            QPR     1     0      H     1     0      H   1996
+#  3     E0 1995-08-19     Chelsea        Everton     0     0      D     0     0      D   1996
+#  4     E0 1995-08-19   Liverpool Sheffield Weds     1     0      H     0     0      D   1996
+#  5     E0 1995-08-19    Man City      Tottenham     1     1      D     0     1      A   1996
+#  6     E0 1995-08-19   Newcastle       Coventry     3     0      H     1     0      H   1996
+#  7     E0 1995-08-19 Southampton  Nott'm Forest     3     4      A     1     3      A   1996
+#  8     E0 1995-08-19    West Ham          Leeds     1     2      A     1     0      H   1996
+#  9     E0 1995-08-19   Wimbledon         Bolton     3     2      H     2     2      D   1996
+# 10     E0 1995-08-20     Arsenal  Middlesbrough     1     1      D     1     1      D   1996
+# # ... with 8,350 more rows
+```
+
+Now that the data from the csv files is all in one data frame, we can do some manipulation to get it into a more tidy format. 
+
+```{r tidy-data, results = "hide"}
+data_tidy <- data %>%
+  gather(key = "venue", value = team, HomeTeam:AwayTeam) %>% 
+  arrange(Date) %>%
+  mutate_if(is.factor, as.character) %>%
+  mutate(venue = ifelse(venue == "HomeTeam",
+                        "Home",
+                        "Away"),
+         FTR = case_when(venue == "Home" & FTR == "H" ~ "W",
+                         venue == "Home" & FTR == "A" ~ "L",
+                         venue == "Away" & FTR == "H" ~ "L",
+                         venue == "Away" & FTR == "A" ~ "W",
+                         TRUE ~ FTR),
+         HTR = case_when(venue == "Home" & HTR == "H" ~ "W",
+                         venue == "Home" & HTR == "A" ~ "L",
+                         venue == "Away" & HTR == "H" ~ "L",
+                         venue == "Away" & HTR == "A" ~ "W",
+                         TRUE ~ HTR),
+         FTGF = ifelse(venue == "Home", FTHG, FTAG),  #Full Time Goals For
+         FTGA = ifelse(venue == "Home", FTAG, FTHG),  #Full Time Goals Against
+         HTGF = ifelse(venue == "Home", HTHG, HTAG),  #Half Time Goals For
+         HTGA = ifelse(venue == "Home", HTAG, HTHG),  #Half Time Goals Against
+         points_earned = case_when(FTR == "W" ~ 3,           #adding points
+                                   FTR == "D" ~ 1,
+                                   FTR == "L" ~ 0)) %>% 
+  select(Div, season, Date, team, venue, FTR, FTGF, FTGA, HTR, HTGF, HTGA, points_earned) %>%
+  group_by(season, team) %>%
+  mutate(points = cumsum(points_earned)) %>% #calculating the number of points each team has through out the season
+  ungroup()
+
+data_tidy
+```
+
+```{r show-tidy-data}
+# # A tibble: 16,720 x 13
+# # Groups:   season, team [440]
+#      Div season       Date        team venue   FTR  FTGF  FTGA   HTR  HTGF  HTGA points_earned points
+#    <chr>  <dbl>     <date>       <chr> <chr> <chr> <int> <int> <chr> <int> <int>         <dbl>  <dbl>
+#  1    E0   1996 1995-08-19 Aston Villa  Home     W     3     1     W     3     0             3      3
+#  2    E0   1996 1995-08-19   Blackburn  Home     W     1     0     W     1     0             3      3
+#  3    E0   1996 1995-08-19     Chelsea  Home     D     0     0     D     0     0             1      1
+#  4    E0   1996 1995-08-19   Liverpool  Home     W     1     0     D     0     0             3      3
+#  5    E0   1996 1995-08-19    Man City  Home     D     1     1     L     0     1             1      1
+#  6    E0   1996 1995-08-19   Newcastle  Home     W     3     0     W     1     0             3      3
+#  7    E0   1996 1995-08-19 Southampton  Home     L     3     4     L     1     3             0      0
+#  8    E0   1996 1995-08-19    West Ham  Home     L     1     2     W     1     0             0      0
+#  9    E0   1996 1995-08-19   Wimbledon  Home     W     3     2     D     2     2             3      3
+# 10    E0   1996 1995-08-19  Man United  Away     L     1     3     L     0     3             0      0
+# # ... with 16,710 more rows
+```
+
+To ensure that our tidying did not create any missing values, we can use the `summarise_all()` function.
+
+```{r check-NA, results = "hide"}
+data_tidy %>% 
+  summarise_all(function(x) sum(is.na(x)))
+```
+
+```{r show-check-NA}
+# # A tibble: 1 x 11
+#     Div season  Date  team venue   FTR  FTGF  FTGA   HTR  HTGF  HTGA
+#   <int>  <int> <int> <int> <int> <int> <int> <int> <int> <int> <int>
+# 1     0      0     0     0     0     0     0     0     0     0     0
+```
+
+Now that we know that the data is in a tidy format, we can begin exploring the data. As an Arsenal fan, I think we should start by looking at how Arsenal has done each year. 
+
+```{r arsenal-points-graph-1, fig.width=12, fig.height=7}
+data_tidy %>%
+  filter(team == "Arsenal",
+         season < 2007) %>%
+  ggplot(aes(Date, points)) +
+  facet_wrap(~season, scales = "free") +
+  geom_line() +
+  theme_tq() +
+  scale_x_date(date_breaks = "1 month", date_labels = "%m/%d") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 12),
+        axis.text.y = element_text(size = 12),
+        strip.text = element_text(size = 12))
+
+```
+
+```{r arsenal-points-graph-2, fig.width=12, fig.height=7}
+data_tidy %>%
+  filter(team == "Arsenal",
+         season >= 2007) %>%
+  ggplot(aes(Date, points)) +
+  facet_wrap(~season, scales = "free") +
+  geom_line() +
+  theme_tq() +
+  scale_x_date(date_breaks = "1 month", date_labels = "%m/%d") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 12),
+        axis.text.y = element_text(size = 12),
+        strip.text = element_text(size = 12))
+
+```
+
+From these graphs, it looks like Arsenal follow a similar pattern every year, which is not surprising since the 2017 season was the first in Arsene Wenger's tenure that they have not finised in the top 4. Looking at the plot for the 2017 season, it is clear that the period of the season that killed their chances of finishing in the top 4 was the strech of games between Februrary and March where their point increase flat lined. Let's now take a look at team's average finishing point total.
+
+```{r season-ending-stats}
+# season_ending <- data_tidy %>%
+  
+
+```
